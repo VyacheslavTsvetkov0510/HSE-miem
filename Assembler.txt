@@ -1,0 +1,119 @@
+.include "m8def.inc"
+
+;Присваиваем символические имена регистрам
+.def temp = r16
+
+;Константы
+.equ fck = 7372800
+.equ usart_baudrate = 115200
+.equ usart_ubrr	= (fck/(usart_baudrate*16))-1
+
+;символ проверки конца строки
+.equ end_character = 0b00000000
+
+;Таймеры - делители частоты
+;0bxxxxx010 - 8
+;0bxxxxx011 - 64
+;0bxxxxx100 - 256
+;0bxxxxx101 - 1024
+.equ timer0_div = 0b00000101
+.equ timer2_div = 0b00000101
+
+;inrterval 0 - 255
+.equ TIMER1_INTERVAL = 0x00
+.equ TIMER2_INTERVAL = 0x00
+
+;Сегмент ОЗУ
+.dseg
+
+;Программный сегмент
+.cseg
+
+.org $000 ;Адрес вектора прерывания Reset
+rjmp RESET
+
+.org $004 ;Адрес вектора прерывания таймера 2
+rjmp TIMER2_OVERFLOW
+
+.org $009 ;Адрес вектора прерывания таймера 0
+rjmp TIMER0_OVERFLOW
+
+; Запись в pmem  данных для отправки
+;"строка",\r,\n, символ проверки конца строки
+ping_str: .db "PING", 0x0a, 0x0d, end_character
+pong_str: .db "PONG", 0x0a, 0x0d, end_character
+
+RESET:
+;Инициализируем стек
+ldi temp, high(RAMEND)
+out sph, temp
+ldi temp, low(RAMEND)
+out spl, temp
+
+;Инициализируем порт
+ldi	temp, HIGH(usart_ubrr)
+out	UBRRH,temp
+ldi	temp, LOW(usart_ubrr)	
+out	UBRRL,temp
+ldi	temp, (1<<TXEN)|(1<<RXEN)
+out	UCSRB,temp
+ldi temp, (1<<URSEL)|(1<<USBS)|(3<<UCSZ0)
+out UCSRC, temp
+
+; Таймеры 0,2 - включение поддержки глобального прерывания
+ldi temp, 0b01000001
+out TIMSK,temp
+
+;Таймер 2 - инициализация
+ldi temp, timer2_div
+out TCCR2, temp	
+ldi temp, TIMER2_INTERVAL
+out TCNT2, temp
+
+;;Таймер 0 - инициализация
+ldi temp, timer0_div
+out TCCR0, temp	 
+ldi temp, TIMER1_INTERVAL
+out TCNT0, temp
+
+;Разрешить глобальные прерывания
+sei
+
+;Пустой цикл для корректной работы программы
+LOOP:
+rjmp LOOP
+
+; Таймер 2 - прерывание по переполнению
+TIMER2_OVERFLOW:
+cli
+ldi ZH, HIGH(2*pong_str)
+ldi ZL, LOW(2*pong_str)
+rcall USART_PUT
+ldi temp, TIMER2_INTERVAL
+out TCNT2, temp
+sei
+reti 
+
+; Таймер 0 - прерывание по переполнению
+TIMER0_OVERFLOW:
+cli
+ldi ZH, HIGH(2*ping_str)
+ldi ZL, LOW(2*ping_str)
+rcall USART_PUT
+ldi temp, TIMER1_INTERVAL
+out TCNT0, temp
+sei
+reti 
+
+; Минипрограмма для отправки данных
+USART_PUT:
+ lpm temp,Z+	
+ cpi temp,end_character
+ breq USART_PUT_END
+  USART_PUT_WAIT:
+   sbis UCSRA,UDRE
+  rjmp USART_PUT_WAIT
+  out UDR,temp
+ rjmp USART_PUT
+ USART_PUT_END:
+ret
